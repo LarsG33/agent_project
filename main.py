@@ -68,8 +68,11 @@ tool_map = {
     "calculator": calculator,
     "multiply": multiply
 }
+MAX_STEPS = 10
+
 def run_agent():
-    while True:
+    for step in range(MAX_STEPS):
+
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=messages,
@@ -81,7 +84,7 @@ def run_agent():
         if not message.tool_calls:
             print("AI：", message.content)
             messages.append(message)
-            break
+            return
 
         messages.append(message)
 
@@ -104,7 +107,9 @@ def run_agent():
                 "tool_call_id": tool_call.id,
                 "content": str(result)
             })
-            # 3. 再调用一次模型
+
+    print("AI：达到最大工具调用轮数，任务停止。")
+    
 while True:
     user_input = input("你：")
     if user_input == "exit":
