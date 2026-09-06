@@ -64,6 +64,47 @@ tools = [
         }
     }
 ]
+tool_map = {
+    "calculator": calculator,
+    "multiply": multiply
+}
+def run_agent():
+    while True:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            tools=tools
+        )
+
+        message = response.choices[0].message
+
+        if not message.tool_calls:
+            print("AI：", message.content)
+            messages.append(message)
+            break
+
+        messages.append(message)
+
+        for tool_call in message.tool_calls:
+            function_name = tool_call.function.name
+            arguments = json.loads(tool_call.function.arguments)
+
+            func = tool_map.get(function_name)
+
+            if func is None:
+                result = f"Error: tool '{function_name}' does not exist."
+            else:
+                try:
+                    result = func(**arguments)
+                except Exception as e:
+                    result = f"Tool execution error: {e}"
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": str(result)
+            })
+            # 3. 再调用一次模型
 while True:
     user_input = input("你：")
     if user_input == "exit":
@@ -75,56 +116,9 @@ while True:
         "role": "user",
         "content": user_input
     })
+    run_agent()
 
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=messages,
-        tools=tools
-    )
 
-    message = response.choices[0].message
-    if message.tool_calls:
-        tool_call = message.tool_calls[0]
 
-        function_name = tool_call.function.name
-        arguments = json.loads(tool_call.function.arguments)
 
-        if function_name == "multiply":
-            result = multiply(arguments["a"], arguments["b"])
 
-        elif function_name == "calculator":
-            result = calculator(arguments["a"], arguments["b"])
-
-            # 1. 把模型刚才的 tool call 记录下来
-        messages.append(message)
-
-        # 2. 把工具执行结果告诉模型
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": str(result)
-        })
-
-        # 3. 再调用一次模型
-        response2 = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            tools=tools
-        )
-
-        answer = response2.choices[0].message.content
-
-        print("AI：", answer)
-
-        # 4. 保存最终回答
-        messages.append({
-            "role": "assistant",
-            "content": answer
-        })
-    else:
-        print("content:", message.content)
-
-        messages.append({
-            "role": "assistant",
-            "content": message.content
-        })
