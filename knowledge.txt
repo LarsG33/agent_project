@@ -1,0 +1,5 @@
+Agent项目规定数据库使用MoonDB。
+项目代号是BlueFox。
+项目负责人叫Alex Chen。
+RAG模块负责从知识库中检索相关信息。
+Chunking用于把长文档切成更小的文本块。

@@ -1,5 +1,6 @@
 from openai import OpenAI
 from dotenv import load_dotenv
+from rag import retrieve
 import json
 import os
 def calculator(a, b):
@@ -20,7 +21,12 @@ client = OpenAI(
 messages = [
     {
         "role": "system",
-        "content": "你是一名Python老师。回答要简洁，并尽量使用简单例子解释。"
+        "content": """
+你是一名Python老师。
+回答要简洁，并尽量使用简单例子解释。
+如果用户问题提供了上下文资料，应优先根据上下文资料回答。
+如果资料中没有答案，请明确说资料中没有相关信息，不要编造。
+"""
     }
 ]
 
@@ -117,10 +123,14 @@ while True:
     elif user_input == "clear":
         messages = messages[:1]
         continue
+    context_chunks = retrieve(user_input)
+    print("检索结果：", context_chunks)
+    context_str = "\n".join(context_chunks)
     messages.append({
         "role": "user",
-        "content": user_input
+        "content": f"上下文：{context_str}\n\n问题：{user_input}"
     })
+
     run_agent()
 
 
