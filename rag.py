@@ -39,7 +39,7 @@ def cosine_similarity(a, b):
     )
 
 
-def retrieve(question, top_k=2):
+def retrieve(question, top_k=2, threshold=0.25):
     question_embedding = embedding_model.encode(question)
 
     scores = []
@@ -57,6 +57,8 @@ def retrieve(question, top_k=2):
     top_chunks = []
 
     for score, i in scores[:top_k]:
-        top_chunks.append(chunks[i])
+
+        if score >= threshold:
+            top_chunks.append(chunks[i])
 
     return top_chunks

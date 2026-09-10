@@ -11,7 +11,13 @@ def multiply(a, b):
     print("本地乘法工具正在调用")
     return a * b
 load_dotenv()
+def search_knowledge(query):
+    result = retrieve(query)
 
+    if not result:
+        return "No relevant information found in the knowledge base."
+
+    return "\n".join(result)
 
 client = OpenAI(
     api_key=os.getenv("DEEPSEEK_API_KEY"),
@@ -24,8 +30,12 @@ messages = [
         "content": """
 你是一名Python老师。
 回答要简洁，并尽量使用简单例子解释。
-如果用户问题提供了上下文资料，应优先根据上下文资料回答。
-如果资料中没有答案，请明确说资料中没有相关信息，不要编造。
+
+对于涉及本项目内部事实的问题，必须优先调用 search_knowledge 工具，
+不要凭模型自身知识猜测。
+
+如果工具返回了知识库检索结果，应优先根据这些结果回答。
+如果知识库中没有相关信息，不要编造项目相关事实。
 """
     }
 ]
@@ -35,7 +45,7 @@ tools = [
     "type": "function",
     "function": {
         "name": "multiply",
-        "description": "Multiply two numbers.",
+        "description": "Use this tool when the user asks to multiply two numeric values.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -54,7 +64,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "calculator",
-            "description": "Add two numbers together.",
+            "description": "Use this tool when the user asks to add two numeric values.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -68,11 +78,29 @@ tools = [
                 "required": ["a", "b"]
             }
         }
+    },
+    {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge",
+        "description": "Use this tool when the user asks about private information specific to this project.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The question or keywords to search for."
+                }
+            },
+            "required": ["query"]
+        }
     }
+}
 ]
 tool_map = {
     "calculator": calculator,
-    "multiply": multiply
+    "multiply": multiply,
+    "search_knowledge": search_knowledge
 }
 MAX_STEPS = 10
 
@@ -98,6 +126,9 @@ def run_agent():
             function_name = tool_call.function.name
             arguments = json.loads(tool_call.function.arguments)
 
+            print(f"[Tool] {function_name}")
+            print(f"[Args] {arguments}")
+
             func = tool_map.get(function_name)
 
             if func is None:
@@ -107,6 +138,8 @@ def run_agent():
                     result = func(**arguments)
                 except Exception as e:
                     result = f"Tool execution error: {e}"
+
+            print(f"[Result] {result}")
 
             messages.append({
                 "role": "tool",
@@ -120,15 +153,15 @@ while True:
     user_input = input("你：")
     if user_input == "exit":
         break
+
     elif user_input == "clear":
         messages = messages[:1]
         continue
-    context_chunks = retrieve(user_input)
-    print("检索结果：", context_chunks)
-    context_str = "\n".join(context_chunks)
+
+
     messages.append({
         "role": "user",
-        "content": f"上下文：{context_str}\n\n问题：{user_input}"
+        "content": user_input
     })
 
     run_agent()
