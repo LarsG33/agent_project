@@ -1,0 +1,120 @@
+import json
+
+
+def make_plan(client, user_input):
+
+    prompt = f"""
+用户任务是：
+{user_input}
+
+请把任务拆成几个简单步骤。
+
+只输出 JSON 数组，不要输出其他内容。
+
+格式必须类似：
+
+[
+  {{
+    "step": 1,
+    "task": "第一步要做什么",
+    "success_condition": "怎样才算这一步完成",
+    "status": "pending"
+  }},
+  {{
+    "step": 2,
+    "task": "第二步要做什么",
+    "success_condition": "怎样才算这一步完成",
+    "status": "pending"
+  }}
+]
+"""
+
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+你是任务规划助手。
+
+当前 Agent 可以使用：
+1. calculator：两个数字相加
+2. multiply：两个数字相乘
+3. search_knowledge：查询项目知识库
+
+制定计划时遵守以下规则：
+
+1. 步骤必须按照真实执行顺序排列。
+2. 每一步只做一个明确目标。
+3. 不要创建重复或含义重叠的步骤。
+4. 如果一个计算需要多个工具，按照实际运算顺序拆分。
+5. 查询类任务如果知识库没有相关信息，该步骤可以最终标记为 failed。
+6. 最后可以有一个汇总结果的步骤。
+7. 只制定计划，不要执行任务。
+"""
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
+    plan_text = response.choices[0].message.content
+
+    return json.loads(plan_text)
+
+def update_plan_status(client, state, final_answer=None):
+
+    prompt = f"""
+当前计划：
+
+{json.dumps(state["plan"], ensure_ascii=False)}
+
+目前已经执行的工具记录：
+
+{json.dumps(state["tool_history"], ensure_ascii=False)}
+
+最终回答：
+
+{final_answer if final_answer else "尚未生成最终回答"}
+
+请根据：
+1. 每个步骤的 task
+2. success_condition
+3. 实际工具调用和结果
+4. 如果已经存在最终回答，也结合最终回答判断
+
+更新每个步骤状态。
+
+状态只能是：
+pending
+done
+failed
+
+注意：
+- 工具执行成功，不代表任务步骤一定完成。
+- 一个步骤可能需要多个工具调用。
+- 有些步骤不需要工具，比如“汇总结果”，这类步骤可以根据最终回答判断是否完成。
+- 不要假设一个工具调用对应一个计划步骤。
+
+只返回完整 JSON 数组。
+"""
+
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {
+                "role": "system",
+                "content": "你负责根据实际执行情况更新任务计划状态。"
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
+    plan_text = response.choices[0].message.content
+
+    state["plan"] = json.loads(plan_text)
