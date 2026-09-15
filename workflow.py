@@ -1,9 +1,28 @@
-from planner import make_plan, update_plan_status
+from planner import make_plan, update_plan_status, replan
 from agent import run_agent_step
 
 
 MAX_STEPS = 10
+MAX_RETRIES = 2
 
+def retry_node(state):
+
+    state["retry_count"] += 1
+
+    state["messages"].append({
+        "role": "user",
+        "content": f"""
+上一轮工具执行失败。
+
+这是第 {state["retry_count"]} 次重试。
+
+请根据工具返回的错误信息，
+重新尝试完成当前任务。
+如果原参数有问题，可以调整参数。
+"""
+    })
+
+    return state
 
 def planner_node(client, state):
 
@@ -28,6 +47,30 @@ def action_node(client, state):
 
     return state
 
+def replan_node(client, state):
+
+    new_plan = replan(
+        client,
+        state
+    )
+
+    state["plan"] = new_plan
+
+    state["messages"].append({
+        "role": "user",
+        "content": f"""
+根据当前执行结果，任务计划已经更新。
+
+新的任务计划：
+
+{new_plan}
+
+请继续根据新的计划完成剩余任务。
+不要重复已经完成的步骤。
+"""
+    })
+
+    return state
 
 def update_node(client, state):
 
@@ -55,11 +98,39 @@ def update_node(client, state):
 
 def router(state):
 
-    if state["last_action"]["type"] == "final":
+    has_pending = any(
+        item["status"] == "pending"
+        for item in state["plan"]
+    )
+
+    action_type = state["last_action"]["type"]
+
+    if action_type == "final":
+
+        state["retry_count"] = 0
+
+        if has_pending:
+            return "replan"
+
         return "end"
 
-    return "action"
+    if action_type == "tool":
 
+        has_failed_tool = any(
+            not result["success"]
+            for result in state["last_action"]["results"]
+        )
+
+        if has_failed_tool:
+
+            if state["retry_count"] < MAX_RETRIES:
+                return "retry"
+
+            return "replan"
+
+        state["retry_count"] = 0
+
+    return "action"
 
 def run_workflow(client, messages, user_input):
 
@@ -69,7 +140,8 @@ def run_workflow(client, messages, user_input):
         "plan": [],
         "tool_history": [],
         "last_action": None,
-        "final_answer": None
+        "final_answer": None,
+        "retry_count": 0
     }
 
     # 1. 制定计划
@@ -121,11 +193,26 @@ def run_workflow(client, messages, user_input):
         for item in state["plan"]:
             print(item)
 
-        # Router
         route = router(state)
 
         if route == "end":
             return state
+
+        elif route == "replan":
+
+            state = replan_node(
+                client,
+                state
+            )
+
+        elif route == "retry":
+
+            state = retry_node(
+                state
+            )
+
+        elif route == "action":
+            continue
 
     print("AI：达到最大执行轮数，任务停止。")
 

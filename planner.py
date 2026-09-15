@@ -119,3 +119,54 @@ failed
     plan_text = response.choices[0].message.content
 
     state["plan"] = json.loads(plan_text)
+
+
+
+def replan(client, state):
+
+    prompt = f"""
+原始用户任务：
+
+{state["user_input"]}
+
+当前计划：
+
+{json.dumps(state["plan"], ensure_ascii=False)}
+
+已经执行的工具记录：
+
+{json.dumps(state["tool_history"], ensure_ascii=False)}
+
+当前最终回答：
+
+{state["final_answer"] if state["final_answer"] else "尚未生成"}
+
+请根据实际执行情况重新调整任务计划。
+
+要求：
+
+1. 已经完成的步骤保留为 done。
+2. 已经确认失败且无法完成的步骤可以保留为 failed。
+3. 对仍未完成的任务重新规划必要步骤。
+4. 不要重复已经完成的工作。
+5. 新增步骤状态必须是 pending。
+6. 只返回完整 JSON 数组。
+"""
+
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {
+                "role": "system",
+                "content": "你负责根据当前执行情况重新规划剩余任务。"
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
+    plan_text = response.choices[0].message.content
+
+    return json.loads(plan_text)
