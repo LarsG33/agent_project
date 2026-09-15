@@ -1,94 +1,102 @@
 import json
 
 from tools import tools, tool_map
-from planner import update_plan_status
 
 
-MAX_STEPS = 10
+def run_agent_step(client, state):
+
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=state["messages"],
+        tools=tools
+    )
+
+    message = response.choices[0].message
 
 
-def run_agent(client, messages, state):
+    # 没有工具调用，说明 LLM 已经给出最终回答
+    if not message.tool_calls:
 
-    for _ in range(MAX_STEPS):
+        print("AI：", message.content)
 
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            tools=tools
+        state["messages"].append(message)
+
+        return {
+            "type": "final",
+            "content": message.content
+        }
+
+
+    # 必须先记录 assistant 的 tool_calls
+    state["messages"].append(message)
+
+    results = []
+
+
+    # 一次 Agent Step 可能包含多个 Tool Call
+    for tool_call in message.tool_calls:
+
+        function_name = tool_call.function.name
+
+        arguments = json.loads(
+            tool_call.function.arguments
         )
 
-        message = response.choices[0].message
+        print(f"[Tool] {function_name}")
+        print(f"[Args] {arguments}")
 
-        if not message.tool_calls:
+        func = tool_map.get(function_name)
 
-            print("AI：", message.content)
 
-            messages.append(message)
+        if func is None:
 
-            update_plan_status(client, state,final_answer = message.content)
-
-            print("最终状态：")
-            for item in state["plan"]:
-                print(item)
-
-            return
-
-        # 必须先记录 assistant 的 tool_calls
-        messages.append(message)
-
-        for tool_call in message.tool_calls:
-
-            function_name = tool_call.function.name
-
-            arguments = json.loads(
-                tool_call.function.arguments
+            result = (
+                f"Error: tool "
+                f"'{function_name}' does not exist."
             )
 
-            print(f"[Tool] {function_name}")
-            print(f"[Args] {arguments}")
+            success = False
 
-            func = tool_map.get(function_name)
+        else:
 
-            if func is None:
+            try:
+                result = func(**arguments)
+                success = True
 
-                result = (
-                    f"Error: tool "
-                    f"'{function_name}' does not exist."
-                )
-
+            except Exception as e:
+                result = f"Tool execution error: {e}"
                 success = False
 
-            else:
 
-                try:
-                    result = func(**arguments)
-                    success = True
+        print(f"[Result] {result}")
 
-                except Exception as e:
-                    result = f"Tool execution error: {e}"
-                    success = False
 
-            print(f"[Result] {result}")
+        # 给 Python Workflow 保存结构化工具历史
+        state["tool_history"].append({
+            "tool": function_name,
+            "args": arguments,
+            "result": str(result),
+            "success": success
+        })
 
-            # 只记录，不判断 Plan 状态
-            state["tool_history"].append({
-                "tool": function_name,
-                "args": arguments,
-                "result": str(result),
-                "success": success
-            })
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": str(result)
-            })
+        # 给 LLM 保存工具结果
+        state["messages"].append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": str(result)
+        })
 
-        # 一轮工具执行结束后，再统一更新计划
-        update_plan_status(client, state)
 
-        print("当前状态：")
-        for item in state["plan"]:
-            print(item)
+        # 记录这一轮 Action 的结果
+        results.append({
+            "tool": function_name,
+            "result": str(result),
+            "success": success
+        })
 
-    print("AI：达到最大工具调用轮数，任务停止。")
+
+    return {
+        "type": "tool",
+        "results": results
+    }

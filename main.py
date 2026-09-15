@@ -1,10 +1,8 @@
 from openai import OpenAI
 from dotenv import load_dotenv
+from workflow import run_workflow
 
 import os
-
-from planner import make_plan
-from agent import run_agent
 
 
 load_dotenv()
@@ -47,40 +45,8 @@ while True:
         messages = messages[:1]
         continue
 
-    plan = make_plan(
-        client,
-        user_input
-    )
-
-    state = {
-        "plan": plan,
-        "tool_history": []
-    }
-
-    print("计划：")
-
-    for item in plan:
-        print(item)
-
-    messages.append({
-        "role": "user",
-        "content": f"""
-用户任务：
-
-{user_input}
-
-任务计划：
-
-{plan}
-
-请参考计划完成任务。
-如果实际工具结果与计划不一致，
-可以根据实际结果调整执行方式。
-"""
-    })
-
-    run_agent(
+    run_workflow(
         client,
         messages,
-        state
+        user_input
     )
