@@ -55,7 +55,9 @@ def replan_node(client, state):
     )
 
     state["plan"] = new_plan
-
+    state["retry_count"] = 0
+    state["final_answer"] = None
+    
     state["messages"].append({
         "role": "user",
         "content": f"""
