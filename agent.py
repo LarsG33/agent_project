@@ -1,9 +1,10 @@
 import json
 
 from tools import tools, tool_map
+from state import AgentState, LastAction, ToolStepResult
 
 
-def run_agent_step(client, state):
+def run_agent_step(client, state: AgentState) -> LastAction:
 
     response = client.chat.completions.create(
         model="deepseek-chat",
@@ -17,20 +18,22 @@ def run_agent_step(client, state):
     # 没有工具调用，说明 LLM 已经给出最终回答
     if not message.tool_calls:
 
-        print("AI：", message.content)
+        content = message.content or ""
+
+        print("AI：", content)
 
         state["messages"].append(message)
 
         return {
             "type": "final",
-            "content": message.content
+            "content": content
         }
 
 
     # 必须先记录 assistant 的 tool_calls
     state["messages"].append(message)
 
-    results = []
+    results: list[ToolStepResult] = []
 
 
     # 一次 Agent Step 可能包含多个 Tool Call

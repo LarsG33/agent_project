@@ -1,7 +1,13 @@
 import json
+from typing import cast
+
+from state import AgentState, PlanStep
 
 
-def make_plan(client, user_input):
+def make_plan(
+    client,
+    user_input: str
+) -> list[PlanStep]:
 
     prompt = f"""
 用户任务是：
@@ -60,12 +66,18 @@ def make_plan(client, user_input):
         ]
     )
 
-    plan_text = response.choices[0].message.content
+    plan_text = response.choices[0].message.content or ""
 
-    return json.loads(plan_text)
+    plan = json.loads(plan_text)
+
+    return cast(list[PlanStep], plan)
 
 
-def update_plan_status(client, state, final_answer=None):
+def update_plan_status(
+    client,
+    state: AgentState,
+    final_answer: str | None = None
+) -> None:
 
     prompt = f"""
 当前计划：
@@ -116,13 +128,17 @@ failed
         ]
     )
 
-    plan_text = response.choices[0].message.content
+    plan_text = response.choices[0].message.content or ""
 
-    state["plan"] = json.loads(plan_text)
+    plan = json.loads(plan_text)
+
+    state["plan"] = cast(list[PlanStep], plan)
 
 
-
-def replan(client, state):
+def replan(
+    client,
+    state: AgentState
+) -> list[PlanStep]:
 
     prompt = f"""
 原始用户任务：
@@ -167,6 +183,8 @@ def replan(client, state):
         ]
     )
 
-    plan_text = response.choices[0].message.content
+    plan_text = response.choices[0].message.content or ""
 
-    return json.loads(plan_text)
+    plan = json.loads(plan_text)
+
+    return cast(list[PlanStep], plan)

@@ -1,11 +1,13 @@
 from planner import make_plan, update_plan_status, replan
 from agent import run_agent_step
+from state import AgentState
 
 
 MAX_STEPS = 10
 MAX_RETRIES = 2
 
-def retry_node(state):
+
+def retry_node(state: AgentState) -> AgentState:
 
     state["retry_count"] += 1
 
@@ -24,7 +26,8 @@ def retry_node(state):
 
     return state
 
-def planner_node(client, state):
+
+def planner_node(client, state: AgentState) -> AgentState:
 
     plan = make_plan(
         client,
@@ -36,7 +39,7 @@ def planner_node(client, state):
     return state
 
 
-def action_node(client, state):
+def action_node(client, state: AgentState) -> AgentState:
 
     result = run_agent_step(
         client,
@@ -47,7 +50,8 @@ def action_node(client, state):
 
     return state
 
-def replan_node(client, state):
+
+def replan_node(client, state: AgentState) -> AgentState:
 
     new_plan = replan(
         client,
@@ -57,7 +61,7 @@ def replan_node(client, state):
     state["plan"] = new_plan
     state["retry_count"] = 0
     state["final_answer"] = None
-    
+
     state["messages"].append({
         "role": "user",
         "content": f"""
@@ -74,10 +78,16 @@ def replan_node(client, state):
 
     return state
 
-def update_node(client, state):
+
+def update_node(client, state: AgentState) -> AgentState:
 
     last_action = state["last_action"]
 
+    if last_action is None:
+        return state
+
+
+    # LLM 已经给出最终回答
     if last_action["type"] == "final":
 
         state["final_answer"] = last_action["content"]
@@ -88,6 +98,11 @@ def update_node(client, state):
             final_answer=last_action["content"]
         )
 
+        # 本轮成功，重试计数清零
+        state["retry_count"] = 0
+
+
+    # 本轮执行了工具
     else:
 
         update_plan_status(
@@ -95,32 +110,50 @@ def update_node(client, state):
             state
         )
 
+        has_failed_tool = any(
+            not result["success"]
+            for result in last_action["results"]
+        )
+
+        # 所有工具都成功，说明连续失败已经结束
+        if not has_failed_tool:
+            state["retry_count"] = 0
+
+
     return state
 
 
-def router(state):
+def router(state: AgentState) -> str:
+
+    last_action = state["last_action"]
+
+    # 理论上正常流程不会发生，
+    # 但为了让状态结构完整，做安全判断
+    if last_action is None:
+        return "action"
+
 
     has_pending = any(
         item["status"] == "pending"
         for item in state["plan"]
     )
 
-    action_type = state["last_action"]["type"]
 
-    if action_type == "final":
-
-        state["retry_count"] = 0
+    # LLM 已经给出最终回答
+    if last_action["type"] == "final":
 
         if has_pending:
             return "replan"
 
         return "end"
 
-    if action_type == "tool":
+
+    # 本轮执行了工具
+    if last_action["type"] == "tool":
 
         has_failed_tool = any(
             not result["success"]
-            for result in state["last_action"]["results"]
+            for result in last_action["results"]
         )
 
         if has_failed_tool:
@@ -130,13 +163,17 @@ def router(state):
 
             return "replan"
 
-        state["retry_count"] = 0
 
     return "action"
 
-def run_workflow(client, messages, user_input):
 
-    state = {
+def run_workflow(
+    client,
+    messages,
+    user_input: str
+) -> AgentState:
+
+    state: AgentState = {
         "messages": messages,
         "user_input": user_input,
         "plan": [],
@@ -145,6 +182,7 @@ def run_workflow(client, messages, user_input):
         "final_answer": None,
         "retry_count": 0
     }
+
 
     # 1. 制定计划
     state = planner_node(
@@ -156,6 +194,7 @@ def run_workflow(client, messages, user_input):
 
     for item in state["plan"]:
         print(item)
+
 
     # 把用户任务和计划加入 LLM 上下文
     state["messages"].append({
@@ -175,6 +214,7 @@ def run_workflow(client, messages, user_input):
 """
     })
 
+
     # 2. Workflow 主循环
     for _ in range(MAX_STEPS):
 
@@ -184,21 +224,28 @@ def run_workflow(client, messages, user_input):
             state
         )
 
+
         # Update Node
         state = update_node(
             client,
             state
         )
 
+
         print("当前状态：")
 
         for item in state["plan"]:
             print(item)
 
+
+        # Router 只读取 state，
+        # 不负责修改 state
         route = router(state)
+
 
         if route == "end":
             return state
+
 
         elif route == "replan":
 
@@ -207,14 +254,17 @@ def run_workflow(client, messages, user_input):
                 state
             )
 
+
         elif route == "retry":
 
             state = retry_node(
                 state
             )
 
+
         elif route == "action":
             continue
+
 
     print("AI：达到最大执行轮数，任务停止。")
 
