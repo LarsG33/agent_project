@@ -6,11 +6,61 @@ from state import AgentState, PlanStep
 
 def make_plan(
     client,
-    user_input: str
+    user_input: str,
+    relevant_memory=None
 ) -> list[PlanStep]:
+
+    planner_messages = [
+        {
+            "role": "system",
+            "content": """
+你是任务规划助手。
+
+当前 Agent 可以使用：
+
+1. calculator：两个数字相加
+2. multiply：两个数字相乘
+3. search_knowledge：查询项目知识库
+4. save_user_memory：保存值得长期记住的信息
+5. delete_user_memory：删除错误、失效或用户要求删除的长期记忆
+
+制定计划时遵守以下规则：
+
+1. 步骤必须按照真实执行顺序排列。
+2. 每一步只做一个明确目标。
+3. 不要创建重复或含义重叠的步骤。
+4. 如果一个计算需要多个工具，按照实际运算顺序拆分。
+5. 查询类任务如果知识库没有相关信息，该步骤可以最终标记为 failed。
+6. 最后可以有一个汇总结果的步骤。
+7. 只制定计划，不要执行任务。
+8. 只有长期稳定且未来有用的信息才需要保存为长期记忆。
+9. 不要把普通问题、临时状态或计算结果保存为长期记忆。
+"""
+        }
+    ]
+
+    if relevant_memory:
+        memory_text = json.dumps(
+            relevant_memory,
+            ensure_ascii=False,
+            indent=2
+        )
+
+        planner_messages.append({
+            "role": "system",
+            "content": f"""
+以下是与当前任务相关的用户长期记忆：
+
+{memory_text}
+
+制定计划时可以使用这些信息，
+不要重复查询已经知道的信息。
+"""
+        })
 
     prompt = f"""
 用户任务是：
+
 {user_input}
 
 请把任务拆成几个简单步骤。
@@ -35,43 +85,17 @@ def make_plan(
 ]
 """
 
+    planner_messages.append({
+        "role": "user",
+        "content": prompt
+    })
+
     response = client.chat.completions.create(
         model="deepseek-chat",
-        messages=[
-            {
-                "role": "system",
-                "content": """
-你是任务规划助手。
-
-当前 Agent 可以使用：
-
-1. calculator：两个数字相加
-2. multiply：两个数字相乘
-3. search_knowledge：查询项目知识库
-4. save_user_memory：保存值得长期记住的信息
-5. delete_user_memory：删除错误、失效或用户要求删除的长期记忆
-
-制定计划时遵守以下规则：
-
-1. 步骤必须按照真实执行顺序排列。
-2. 每一步只做一个明确目标。
-3. 不要创建重复或含义重叠的步骤。
-4. 如果一个计算需要多个工具，按照实际运算顺序拆分。
-5. 查询类任务如果知识库没有相关信息，该步骤可以最终标记为 failed。
-6. 最后可以有一个汇总结果的步骤。
-7. 只制定计划，不要执行任务。
-8. 只有长期稳定且未来有用的信息才需要保存为长期记忆。
-9. 不要把普通问题、临时状态或计算结果保存为长期记忆。
-"""
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+        messages=planner_messages
     )
 
-    plan_text = response.choices[0].message.content or ""
+    plan_text = response.choices[0].message.content or "[]"
 
     plan = json.loads(plan_text)
 
@@ -133,7 +157,7 @@ failed
         ]
     )
 
-    plan_text = response.choices[0].message.content or ""
+    plan_text = response.choices[0].message.content or "[]"
 
     plan = json.loads(plan_text)
 
@@ -142,8 +166,34 @@ failed
 
 def replan(
     client,
-    state: AgentState
+    state: AgentState,
+    relevant_memory=None
 ) -> list[PlanStep]:
+
+    replan_messages = [
+        {
+            "role": "system",
+            "content": "你负责根据当前执行情况重新规划剩余任务。"
+        }
+    ]
+
+    if relevant_memory:
+        memory_text = json.dumps(
+            relevant_memory,
+            ensure_ascii=False,
+            indent=2
+        )
+
+        replan_messages.append({
+            "role": "system",
+            "content": f"""
+以下是与当前任务相关的用户长期记忆：
+
+{memory_text}
+
+重新规划时可以继续参考这些信息。
+"""
+        })
 
     prompt = f"""
 原始用户任务：
@@ -174,21 +224,17 @@ def replan(
 6. 只返回完整 JSON 数组。
 """
 
+    replan_messages.append({
+        "role": "user",
+        "content": prompt
+    })
+
     response = client.chat.completions.create(
         model="deepseek-chat",
-        messages=[
-            {
-                "role": "system",
-                "content": "你负责根据当前执行情况重新规划剩余任务。"
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+        messages=replan_messages
     )
 
-    plan_text = response.choices[0].message.content or ""
+    plan_text = response.choices[0].message.content or "[]"
 
     plan = json.loads(plan_text)
 

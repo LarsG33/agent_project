@@ -1,9 +1,7 @@
 from openai import OpenAI
 from dotenv import load_dotenv
 from workflow import run_workflow
-from memory import load_memory
 
-import json
 import os
 
 
@@ -18,15 +16,7 @@ client = OpenAI(
 
 def build_system_prompt():
 
-    memory = load_memory()
-
-    memory_text = json.dumps(
-        memory,
-        ensure_ascii=False,
-        indent=2
-    )
-
-    return f"""
+    return """
 你是一名Python老师。
 
 回答要简洁，并尽量使用简单例子解释。
@@ -38,11 +28,6 @@ def build_system_prompt():
 必须优先调用 search_knowledge。
 
 不要编造项目内部事实。
-
-
-以下是用户的长期记忆：
-
-{memory_text}
 
 
 你可以使用 save_user_memory 工具保存长期记忆。
@@ -92,12 +77,21 @@ while True:
         messages = messages[:1]
         continue
 
-    # 每次开始新的用户任务前，
-    # 重新读取最新的长期记忆
-    messages[0]["content"] = build_system_prompt()
-
-    run_workflow(
+    state = run_workflow(
         client,
         messages,
         user_input
     )
+
+    # 只把真正的用户输入和最终回答
+    # 保存到正式聊天历史
+    messages.append({
+        "role": "user",
+        "content": user_input
+    })
+
+    if state["final_answer"]:
+        messages.append({
+            "role": "assistant",
+            "content": state["final_answer"]
+        })
