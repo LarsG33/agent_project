@@ -32,13 +32,15 @@ def retry_node(state: AgentState) -> AgentState:
 def planner_node(
     client,
     state: AgentState,
-    relevant_memory
+    relevant_memory,
+    messages
 ) -> AgentState:
 
     plan = make_plan(
         client,
         state["user_input"],
-        relevant_memory
+        relevant_memory,
+        messages
     )
 
     state["plan"] = plan
@@ -73,20 +75,6 @@ def replan_node(
     state["plan"] = new_plan
     state["retry_count"] = 0
     state["final_answer"] = None
-
-    state["messages"].append({
-        "role": "user",
-        "content": f"""
-根据当前执行结果，任务计划已经更新。
-
-新的任务计划：
-
-{new_plan}
-
-请继续根据新的计划完成剩余任务。
-不要重复已经完成的步骤。
-"""
-    })
 
     return state
 
@@ -199,7 +187,8 @@ def run_workflow(
     state = planner_node(
         client,
         state,
-        relevant_memory
+        relevant_memory,
+        messages
     )
 
     print("计划：")
@@ -211,8 +200,7 @@ def run_workflow(
     agent_messages = build_context(
         messages,
         user_input,
-        relevant_memory,
-        state["plan"]
+        relevant_memory
     )
 
     state["messages"] = agent_messages
