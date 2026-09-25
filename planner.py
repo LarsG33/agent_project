@@ -7,7 +7,8 @@ from state import AgentState, PlanStep
 def make_plan(
     client,
     user_input: str,
-    relevant_memory=None
+    relevant_memory=None,
+    conversation_history=None
 ) -> list[PlanStep]:
 
     planner_messages = [
@@ -38,6 +39,11 @@ def make_plan(
 """
         }
     ]
+
+    if conversation_history:
+        planner_messages.extend(
+            conversation_history[1:]
+        )
 
     if relevant_memory:
         memory_text = json.dumps(
