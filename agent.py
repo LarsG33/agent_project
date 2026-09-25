@@ -6,9 +6,38 @@ from state import AgentState, LastAction, ToolStepResult
 
 def run_agent_step(client, state: AgentState) -> LastAction:
 
+    # 每一轮都临时注入最新计划，
+    # 不把旧计划不断保存进 state["messages"]
+    agent_messages = state["messages"].copy()
+
+    plan_text = json.dumps(
+        state["plan"],
+        ensure_ascii=False,
+        indent=2
+    )
+
+    agent_messages.append({
+        "role": "system",
+        "content": f"""
+当前最新任务计划：
+
+{plan_text}
+
+请根据最新计划继续执行任务。
+
+注意：
+
+1. 不要重复执行 status 为 done 的步骤。
+2. 优先完成 status 为 pending 的步骤。
+3. failed 表示该步骤已经确认失败，不要无意义重复。
+4. 如果需要工具，调用合适的工具。
+5. 如果任务已经全部完成，直接给出最终回答。
+"""
+    })
+
     response = client.chat.completions.create(
         model="deepseek-chat",
-        messages=state["messages"],
+        messages=agent_messages,
         tools=tools
     )
 
