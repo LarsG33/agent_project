@@ -4,8 +4,7 @@ import json
 def build_context(
     messages,
     user_input: str,
-    relevant_memory,
-    plan
+    relevant_memory
 ):
     # 正式聊天历史的副本
     # 后续修改不会影响原来的 messages
@@ -30,12 +29,6 @@ def build_context(
 """
         })
 
-    plan_text = json.dumps(
-        plan,
-        ensure_ascii=False,
-        indent=2
-    )
-
     agent_messages.append({
         "role": "user",
         "content": f"""
@@ -43,16 +36,7 @@ def build_context(
 
 {user_input}
 
-任务计划：
-
-{plan_text}
-
-请参考计划完成任务。
-
-如果实际工具结果与计划不一致，
-可以根据实际结果调整执行方式。
-
-不要重复已经完成的步骤。
+请完成这个任务。
 """
     })
 
