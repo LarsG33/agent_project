@@ -1,10 +1,11 @@
 import json
 
 from tools import tools, tool_map
-from state import AgentState, LastAction, ToolStepResult
+from state import AgentState
 
 
-def run_agent_step(client, state: AgentState) -> LastAction:
+def call_agent(client, state: AgentState) -> dict:
+    """只调用一次模型，返回消息；工具由独立节点执行。"""
 
     # 每一轮都临时注入最新计划，
     # 不把旧计划不断保存进 state["messages"]
@@ -41,94 +42,56 @@ def run_agent_step(client, state: AgentState) -> LastAction:
         tools=tools
     )
 
-    message = response.choices[0].message
+    # 全程使用 OpenAI 格式的普通字典，直接供 DeepSeek SDK 使用。
+    return response.choices[0].message.model_dump(exclude_none=True)
 
 
-    # 没有工具调用，说明 LLM 已经给出最终回答
-    if not message.tool_calls:
+def execute_tools(message: dict) -> dict:
+    """只返回本轮增量，不直接修改 State。每个调用都有对应的 tool 消息。"""
+    new_messages = []
+    history = []
+    results = []
 
-        content = message.content or ""
-
-        print("AI：", content)
-
-        state["messages"].append(message)
-
-        return {
-            "type": "final",
-            "content": content
-        }
-
-
-    # 必须先记录 assistant 的 tool_calls
-    state["messages"].append(message)
-
-    results: list[ToolStepResult] = []
-
-
-    # 一次 Agent Step 可能包含多个 Tool Call
-    for tool_call in message.tool_calls:
-
-        function_name = tool_call.function.name
-
-        arguments = json.loads(
-            tool_call.function.arguments
-        )
+    for tool_call in message.get("tool_calls", []):
+        function_name = tool_call["function"]["name"]
+        arguments = {}
+        try:
+            # JSON 解析也可能失败，纳入统一错误处理。
+            arguments = json.loads(tool_call["function"]["arguments"])
+            if not isinstance(arguments, dict):
+                raise ValueError("Tool arguments must be a JSON object")
+            func = tool_map.get(function_name)
+            if func is None:
+                raise ValueError(f"Unknown tool: {function_name}")
+            result = func(**arguments)
+            success = True
+        except Exception as exc:
+            result = f"Tool execution error: {exc}"
+            success = False
 
         print(f"[Tool] {function_name}")
         print(f"[Args] {arguments}")
-
-        func = tool_map.get(function_name)
-
-
-        if func is None:
-
-            result = (
-                f"Error: tool "
-                f"'{function_name}' does not exist."
-            )
-
-            success = False
-
-        else:
-
-            try:
-                result = func(**arguments)
-                success = True
-
-            except Exception as e:
-                result = f"Tool execution error: {e}"
-                success = False
-
-
         print(f"[Result] {result}")
 
-
-        # 给 Python Workflow 保存结构化工具历史
-        state["tool_history"].append({
+        history.append({
             "tool": function_name,
-            "args": arguments,
+            "args": arguments if isinstance(arguments, dict) else {},
             "result": str(result),
-            "success": success
+            "success": success,
         })
-
-
-        # 给 LLM 保存工具结果
-        state["messages"].append({
+        new_messages.append({
             "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": str(result)
+            "tool_call_id": tool_call["id"],
+            "content": str(result),
         })
-
-
-        # 记录这一轮 Action 的结果
         results.append({
             "tool": function_name,
             "result": str(result),
-            "success": success
+            "success": success,
         })
 
-
     return {
-        "type": "tool",
-        "results": results
+        "messages": new_messages,
+        "tool_history": history,
+        "last_action": {"type": "tool", "results": results},
     }

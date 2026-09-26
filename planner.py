@@ -112,7 +112,7 @@ def update_plan_status(
     client,
     state: AgentState,
     final_answer: str | None = None
-) -> None:
+) -> list[PlanStep]:
 
     prompt = f"""
 当前计划：
@@ -167,7 +167,7 @@ failed
 
     plan = json.loads(plan_text)
 
-    state["plan"] = cast(list[PlanStep], plan)
+    return cast(list[PlanStep], plan)
 
 
 def replan(
@@ -245,3 +245,4 @@ def replan(
     plan = json.loads(plan_text)
 
     return cast(list[PlanStep], plan)
+

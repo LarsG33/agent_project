@@ -1,2 +1,5 @@
 openai
 python-dotenv
+numpy
+sentence-transformers
+langgraph>=1.0,<2
