@@ -46,3 +46,7 @@ class AgentState(TypedDict):
 
     # 覆盖字段：每轮模型调用后递增，限制业务轮数。
     step_count: int
+
+    # Day15：人工审批结果。None=尚未审批，True/False=允许/拒绝。
+    # 没有 Reducer，所以每次审批结果直接覆盖旧值。
+    approval_granted: bool | None
