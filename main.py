@@ -77,6 +77,14 @@ while True:
         messages = messages[:1]
         continue
 
+    elif user_input.startswith("resume "):
+        thread_id = user_input.split(maxsplit=1)[1]
+        state = run_workflow(client, messages, thread_id=thread_id)
+        if state and state.get("final_answer"):
+            messages.append({"role": "user", "content": state["user_input"]})
+            messages.append({"role": "assistant", "content": state["final_answer"]})
+        continue
+
     state = run_workflow(
         client,
         messages,
@@ -85,12 +93,15 @@ while True:
 
     # 只把真正的用户输入和最终回答
     # 保存到正式聊天历史
+    if state is None:
+        continue
+
     messages.append({
         "role": "user",
         "content": user_input
     })
 
-    if state["final_answer"]:
+    if state.get("final_answer"):
         messages.append({
             "role": "assistant",
             "content": state["final_answer"]
