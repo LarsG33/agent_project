@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt, Command
 
@@ -88,7 +88,7 @@ def stop_node(state: AgentState) -> dict:
     return {"final_answer": None}
 
 
-def build_graph(client, conversation_history, relevant_memory):
+def build_graph(client, conversation_history, relevant_memory, checkpointer):
     """外层固定依赖，内层 Node 只接收 State、返回本轮更新。"""
     def planner_node(state: AgentState) -> dict:
         print("[Node] planner")
@@ -210,58 +210,83 @@ def build_graph(client, conversation_history, relevant_memory):
     graph.add_edge("replan", "agent")
     graph.add_edge("stop", END)
 
-    # interrupt() 必须配合 checkpointer。
-    # Day15 先用内存版，只为观察暂停/恢复机制。
-    return graph.compile(
-        checkpointer=InMemorySaver()
-    )
+    # 由外部传入持久化 checkpointer，图结构不变。
+    return graph.compile(checkpointer=checkpointer)
 
 
-def run_workflow(client, messages, user_input: str) -> AgentState:
-    relevant_memory = retrieve_memory(client, user_input)
-    if relevant_memory:
-        print("相关长期记忆：", relevant_memory)
+def run_workflow(
+    client,
+    messages,
+    user_input: str | None = None,
+    thread_id: str | None = None,
+) -> AgentState | None:
+    """新任务生成 thread_id；恢复任务复用原来的 thread_id。"""
+    is_resume = thread_id is not None
+    if not is_resume and user_input is None:
+        raise ValueError("新任务必须提供 user_input")
 
-    initial_state: AgentState = {
-        "messages": build_context(messages, user_input, relevant_memory),
-        "user_input": user_input,
-        "plan": [],
-        "tool_history": [],
-        "last_action": None,
-        "final_answer": None,
-        "retry_count": 0,
-        "step_count": 0,
-        "approval_granted": None,
-    }
-
-    app = build_graph(client, messages, relevant_memory)
-
-    # thread_id 相当于这一次任务的“存档槽编号”。
-    # 恢复时必须继续使用同一个 config。
     config = {
         "recursion_limit": MAX_STEPS * 4 + 10,
         "configurable": {
-            "thread_id": f"task-{uuid4().hex}"
+            "thread_id": thread_id or f"task-{uuid4().hex}",
         },
     }
+    thread_id = config["configurable"]["thread_id"]
 
-    state = app.invoke(
-        initial_state,
-        config=config
-    )
+    with SqliteSaver.from_conn_string("checkpoints.sqlite") as checkpointer:
+        if is_resume:
+            # 先打开存档，取回原始问题，再恢复图需要的外部依赖。
+            app = build_graph(client, messages, [], checkpointer)
+            snapshot = app.get_state(config)
+            if not snapshot.values:
+                print("找不到这个任务的存档")
+                return None
+            if not snapshot.next:
+                print("任务已经结束，没有待恢复的节点")
+                return None
+            if "approval" not in snapshot.next:
+                print("当前任务不是等待人工批准的状态：", snapshot.next)
+                return None
 
-    # 如果图碰到 interrupt()，invoke 会先返回。
-    # CLI 在图外询问用户，再用 Command(resume=...) 恢复同一 thread。
-    while "__interrupt__" in state:
-        answer = input("是否允许执行以上操作？(y/n)：").strip().lower()
-        approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
+            saved_input = snapshot.values["user_input"]
+            relevant_memory = retrieve_memory(client, saved_input)
+            app = build_graph(client, messages, relevant_memory, checkpointer)
+            print(f"恢复任务：{thread_id}")
+            print("下一节点：", snapshot.next)
+            answer = input("是否批准之前暂停的操作？(y/n/later)：").strip().lower()
+            if answer == "later":
+                print(f"任务仍处于暂停状态，ID：{thread_id}")
+                return None
+            approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
+            state = app.invoke(Command(resume=approved), config=config)
+        else:
+            relevant_memory = retrieve_memory(client, user_input)
+            if relevant_memory:
+                print("相关长期记忆：", relevant_memory)
+            initial_state: AgentState = {
+                "messages": build_context(messages, user_input, relevant_memory),
+                "user_input": user_input,
+                "plan": [],
+                "tool_history": [],
+                "last_action": None,
+                "final_answer": None,
+                "retry_count": 0,
+                "step_count": 0,
+                "approval_granted": None,
+            }
+            app = build_graph(client, messages, relevant_memory, checkpointer)
+            print(f"当前任务 ID：{thread_id}")
+            state = app.invoke(initial_state, config=config)
 
-        state = app.invoke(
-            Command(resume=approved),
-            config=config
-        )
+        # interrupt 后的审批可以现在执行，也可以 later 留到下次启动。
+        while "__interrupt__" in state:
+            answer = input("是否允许执行以上操作？(y/n/later)：").strip().lower()
+            if answer == "later":
+                print(f"任务已暂停，ID：{thread_id}")
+                return None
+            approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
+            state = app.invoke(Command(resume=approved), config=config)
 
-    if state["final_answer"]:
-        print("AI：", state["final_answer"])
-
-    return state
+        if state.get("final_answer"):
+            print("AI：", state["final_answer"])
+        return state
