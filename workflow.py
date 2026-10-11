@@ -9,6 +9,7 @@ from agent import call_agent, execute_tools
 from state import AgentState
 from memory import retrieve_memory
 from context import build_context
+from task_manager import save_task, update_task_status
 
 
 MAX_STEPS = 10  # 模型执行轮数，不是图中节点总数
@@ -219,8 +220,9 @@ def run_workflow(
     messages,
     user_input: str | None = None,
     thread_id: str | None = None,
+    approval: bool | None = None,
 ) -> AgentState | None:
-    """新任务生成 thread_id；恢复任务复用原来的 thread_id。"""
+    """新建任务或通过 thread_id 恢复待审批任务。"""
     is_resume = thread_id is not None
     if not is_resume and user_input is None:
         raise ValueError("新任务必须提供 user_input")
@@ -235,13 +237,13 @@ def run_workflow(
 
     with SqliteSaver.from_conn_string("checkpoints.sqlite") as checkpointer:
         if is_resume:
-            # 先打开存档，取回原始问题，再恢复图需要的外部依赖。
             app = build_graph(client, messages, [], checkpointer)
             snapshot = app.get_state(config)
             if not snapshot.values:
                 print("找不到这个任务的存档")
                 return None
             if not snapshot.next:
+                update_task_status(thread_id, "completed")
                 print("任务已经结束，没有待恢复的节点")
                 return None
             if "approval" not in snapshot.next:
@@ -252,13 +254,19 @@ def run_workflow(
             relevant_memory = retrieve_memory(client, saved_input)
             app = build_graph(client, messages, relevant_memory, checkpointer)
             print(f"恢复任务：{thread_id}")
-            print("下一节点：", snapshot.next)
-            answer = input("是否批准之前暂停的操作？(y/n/later)：").strip().lower()
-            if answer == "later":
-                print(f"任务仍处于暂停状态，ID：{thread_id}")
-                return None
-            approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
+
+            if approval is None:
+                answer = input("是否批准之前暂停的操作？(y/n/later)：").strip().lower()
+                if answer == "later":
+                    print("任务保持暂停状态")
+                    return None
+                approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
+            else:
+                approved = approval
+
+            update_task_status(thread_id, "running")
             state = app.invoke(Command(resume=approved), config=config)
+
         else:
             relevant_memory = retrieve_memory(client, user_input)
             if relevant_memory:
@@ -275,18 +283,21 @@ def run_workflow(
                 "approval_granted": None,
             }
             app = build_graph(client, messages, relevant_memory, checkpointer)
+            save_task(thread_id, user_input, "running")
             print(f"当前任务 ID：{thread_id}")
             state = app.invoke(initial_state, config=config)
 
-        # interrupt 后的审批可以现在执行，也可以 later 留到下次启动。
         while "__interrupt__" in state:
+            update_task_status(thread_id, "paused")
             answer = input("是否允许执行以上操作？(y/n/later)：").strip().lower()
             if answer == "later":
                 print(f"任务已暂停，ID：{thread_id}")
                 return None
             approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
+            update_task_status(thread_id, "running")
             state = app.invoke(Command(resume=approved), config=config)
 
+        update_task_status(thread_id, "completed")
         if state.get("final_answer"):
             print("AI：", state["final_answer"])
         return state
