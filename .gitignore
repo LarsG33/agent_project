@@ -5,3 +5,5 @@ __pycache__/
 memory.json
 checkpoints.sqlite
 checkpoints.sqlite-*
+tasks.sqlite
+tasks.sqlite-*
