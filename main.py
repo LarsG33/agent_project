@@ -1,6 +1,7 @@
 from openai import OpenAI
 from dotenv import load_dotenv
 from workflow import run_workflow
+from task_manager import init_db, get_pending_tasks
 
 import os
 
@@ -66,6 +67,8 @@ messages = [
 ]
 
 
+init_db()
+
 while True:
 
     user_input = input("你：")
@@ -75,6 +78,35 @@ while True:
 
     elif user_input == "clear":
         messages = messages[:1]
+        continue
+
+    elif user_input == "tasks":
+        tasks = get_pending_tasks()
+        if not tasks:
+            print("没有待处理任务")
+        else:
+            print("待审批任务：")
+            for i, (_, title) in enumerate(tasks, 1):
+                print(f"{i}. {title}")
+        continue
+
+    elif user_input.startswith(("approve ", "reject ")):
+        command, number = user_input.split(maxsplit=1)
+        tasks = get_pending_tasks()
+        if not number.isdigit() or not 1 <= int(number) <= len(tasks):
+            print("请输入有效的待审批任务序号，可以先输入 tasks 查看")
+            continue
+        thread_id, title = tasks[int(number) - 1]
+        print(f"选中的任务：{title}")
+        state = run_workflow(
+            client,
+            messages,
+            thread_id=thread_id,
+            approval=(command == "approve"),
+        )
+        if state and state.get("final_answer"):
+            messages.append({"role": "user", "content": state["user_input"]})
+            messages.append({"role": "assistant", "content": state["final_answer"]})
         continue
 
     elif user_input.startswith("resume "):
