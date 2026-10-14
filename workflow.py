@@ -1,4 +1,6 @@
 from uuid import uuid4
+import logging
+import time
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import StateGraph, START, END
@@ -11,6 +13,8 @@ from memory import retrieve_memory
 from context import build_context
 from task_manager import save_task, update_task_status
 
+
+logger = logging.getLogger(__name__)
 
 MAX_STEPS = 10  # 模型执行轮数，不是图中节点总数
 MAX_RETRIES = 2
@@ -68,6 +72,7 @@ def route_after_update(state: AgentState) -> str:
 
 
 def retry_node(state: AgentState) -> dict:
+    logger.info("Retry node triggered")
     print("[Node] retry")
     count = state["retry_count"] + 1
     return {
@@ -92,6 +97,8 @@ def stop_node(state: AgentState) -> dict:
 def build_graph(client, conversation_history, relevant_memory, checkpointer):
     """外层固定依赖，内层 Node 只接收 State、返回本轮更新。"""
     def planner_node(state: AgentState) -> dict:
+        logger.info("Planner start")
+        started = time.perf_counter()
         print("[Node] planner")
         plan = make_plan(
             client, state["user_input"], relevant_memory, conversation_history
@@ -99,9 +106,11 @@ def build_graph(client, conversation_history, relevant_memory, checkpointer):
         print("计划：")
         for item in plan:
             print(item)
+        logger.info("Planner completed in %.2fs", time.perf_counter() - started)
         return {"plan": plan}
 
     def agent_node(state: AgentState) -> dict:
+        logger.info("Agent round %s", state["step_count"] + 1)
         print(f"[Node] agent（第 {state['step_count'] + 1} 轮）")
         message = call_agent(client, state)
         if message.get("tool_calls"):
@@ -147,6 +156,7 @@ def build_graph(client, conversation_history, relevant_memory, checkpointer):
         }
 
     def tools_node(state: AgentState) -> dict:
+        logger.info("Tools node start")
         print("[Node] tools")
         return execute_tools(state["messages"][-1])
 
@@ -222,82 +232,132 @@ def run_workflow(
     thread_id: str | None = None,
     approval: bool | None = None,
 ) -> AgentState | None:
-    """新建任务或通过 thread_id 恢复待审批任务。"""
+    """New task, approval resume, or retry a failed checkpoint.
+
+    Note: retry of a failed node may repeat its side effects; use only with
+    idempotent tools or after checking that the operation is safe to repeat.
+    """
     is_resume = thread_id is not None
     if not is_resume and user_input is None:
         raise ValueError("新任务必须提供 user_input")
 
     config = {
         "recursion_limit": MAX_STEPS * 4 + 10,
-        "configurable": {
-            "thread_id": thread_id or f"task-{uuid4().hex}",
-        },
+        "configurable": {"thread_id": thread_id or f"task-{uuid4().hex}"},
     }
     thread_id = config["configurable"]["thread_id"]
+    logger.info("[%s] workflow start, resume=%s", thread_id, is_resume)
 
-    with SqliteSaver.from_conn_string("checkpoints.sqlite") as checkpointer:
-        if is_resume:
-            app = build_graph(client, messages, [], checkpointer)
-            snapshot = app.get_state(config)
-            if not snapshot.values:
-                print("找不到这个任务的存档")
-                return None
-            if not snapshot.next:
-                update_task_status(thread_id, "completed")
-                print("任务已经结束，没有待恢复的节点")
-                return None
-            if "approval" not in snapshot.next:
-                print("当前任务不是等待人工批准的状态：", snapshot.next)
-                return None
+    try:
+        with SqliteSaver.from_conn_string("checkpoints.sqlite") as checkpointer:
+            if is_resume:
+                app = build_graph(client, messages, [], checkpointer)
+                snapshot = app.get_state(config)
+                if not snapshot.values:
+                    print("找不到这个任务的存档")
+                    return None
 
-            saved_input = snapshot.values["user_input"]
-            relevant_memory = retrieve_memory(client, saved_input)
-            app = build_graph(client, messages, relevant_memory, checkpointer)
-            print(f"恢复任务：{thread_id}")
+                # An approval node in snapshot.next is not, by itself,
+                # proof that interrupt() has actually been reached.
+                interrupts = getattr(snapshot, "interrupts", ())
+                if not interrupts:
+                    interrupts = tuple(
+                        item for task in snapshot.tasks
+                        for item in (getattr(task, "interrupts", ()) or ())
+                    )
+                errors = [task.error for task in snapshot.tasks if getattr(task, "error", None)]
 
-            if approval is None:
-                answer = input("是否批准之前暂停的操作？(y/n/later)：").strip().lower()
+                if not snapshot.next:
+                    print("没有待恢复的节点；请检查任务是否已经结束")
+                    return None
+
+                saved_input = snapshot.values["user_input"]
+                relevant_memory = retrieve_memory(client, saved_input)
+                app = build_graph(client, messages, relevant_memory, checkpointer)
+                logger.info("[%s] resume from %s", thread_id, snapshot.next)
+
+                if interrupts:
+                    if approval is None:
+                        answer = input("是否批准之前暂停的操作？(y/n/later)：").strip().lower()
+                        if answer == "later":
+                            print("任务保持暂停状态")
+                            return None
+                        approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
+                    else:
+                        approved = approval
+                    update_task_status(thread_id, "running")
+                    state = app.invoke(Command(resume=approved), config=config)
+
+                elif errors:
+                    if approval is not None:
+                        print("这个任务并非待审批状态，不能使用 approve/reject")
+                        return None
+                    print("上次执行失败：", errors)
+                    confirm = input("确认故障已解决、重试不会重复产生副作用？(y/n)：").strip().lower()
+                    if confirm not in {"y", "yes", "1", "true"}:
+                        print("未重试，保留失败任务")
+                        return None
+                    update_task_status(thread_id, "running")
+                    state = app.invoke(None, config=config)
+
+                else:
+                    # A pending node with no recorded failure or interrupt
+                    # may represent an unstarted/unfinished task. Avoid
+                    # silently advancing it without the user's choice.
+                    if approval is not None:
+                        print("当前任务没有待处理的人工中断")
+                        return None
+                    print("Checkpoint 待执行节点：", snapshot.next)
+                    confirm = input("确认要从此处继续执行？(y/n)：").strip().lower()
+                    if confirm not in {"y", "yes", "1", "true"}:
+                        return None
+                    update_task_status(thread_id, "running")
+                    state = app.invoke(None, config=config)
+
+            else:
+                relevant_memory = retrieve_memory(client, user_input)
+                if relevant_memory:
+                    print("相关长期记忆：", relevant_memory)
+                initial_state: AgentState = {
+                    "messages": build_context(messages, user_input, relevant_memory),
+                    "user_input": user_input,
+                    "plan": [],
+                    "tool_history": [],
+                    "last_action": None,
+                    "final_answer": None,
+                    "retry_count": 0,
+                    "step_count": 0,
+                    "approval_granted": None,
+                }
+                app = build_graph(client, messages, relevant_memory, checkpointer)
+                save_task(thread_id, user_input, "running")
+                print(f"当前任务 ID：{thread_id}")
+                state = app.invoke(initial_state, config=config)
+
+            while "__interrupt__" in state:
+                update_task_status(thread_id, "paused")
+                logger.info("[%s] waiting for approval", thread_id)
+                answer = input("是否允许执行以上操作？(y/n/later)：").strip().lower()
                 if answer == "later":
-                    print("任务保持暂停状态")
+                    print(f"任务已暂停，ID：{thread_id}")
                     return None
                 approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
-            else:
-                approved = approval
+                update_task_status(thread_id, "running")
+                state = app.invoke(Command(resume=approved), config=config)
 
-            update_task_status(thread_id, "running")
-            state = app.invoke(Command(resume=approved), config=config)
+            # Reaching END is not enough if the step limit was hit.
+            if not state.get("final_answer"):
+                update_task_status(thread_id, "failed")
+                logger.warning("[%s] ended without final_answer", thread_id)
+                print("本次执行没有最终回答，任务标记为 failed")
+                return state
 
-        else:
-            relevant_memory = retrieve_memory(client, user_input)
-            if relevant_memory:
-                print("相关长期记忆：", relevant_memory)
-            initial_state: AgentState = {
-                "messages": build_context(messages, user_input, relevant_memory),
-                "user_input": user_input,
-                "plan": [],
-                "tool_history": [],
-                "last_action": None,
-                "final_answer": None,
-                "retry_count": 0,
-                "step_count": 0,
-                "approval_granted": None,
-            }
-            app = build_graph(client, messages, relevant_memory, checkpointer)
-            save_task(thread_id, user_input, "running")
-            print(f"当前任务 ID：{thread_id}")
-            state = app.invoke(initial_state, config=config)
-
-        while "__interrupt__" in state:
-            update_task_status(thread_id, "paused")
-            answer = input("是否允许执行以上操作？(y/n/later)：").strip().lower()
-            if answer == "later":
-                print(f"任务已暂停，ID：{thread_id}")
-                return None
-            approved = answer in {"y", "yes", "1", "true", "允许", "同意"}
-            update_task_status(thread_id, "running")
-            state = app.invoke(Command(resume=approved), config=config)
-
-        update_task_status(thread_id, "completed")
-        if state.get("final_answer"):
+            update_task_status(thread_id, "completed")
+            logger.info("[%s] completed", thread_id)
             print("AI：", state["final_answer"])
-        return state
+            return state
+    except Exception:
+        logger.exception("[%s] workflow failed", thread_id)
+        update_task_status(thread_id, "failed")
+        print(f"任务执行失败，ID：{thread_id}；可通过 failed 查看")
+        return None
