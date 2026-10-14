@@ -7,3 +7,5 @@ checkpoints.sqlite
 checkpoints.sqlite-*
 tasks.sqlite
 tasks.sqlite-*
+agent.log
+agent.log.*
