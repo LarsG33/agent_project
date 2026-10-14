@@ -1,9 +1,16 @@
 from openai import OpenAI
 from dotenv import load_dotenv
 from workflow import run_workflow
-from task_manager import init_db, get_pending_tasks
+from task_manager import init_db, get_pending_tasks, get_failed_tasks
 
 import os
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("agent.log", encoding="utf-8")],
+)
 
 
 load_dotenv()
@@ -11,7 +18,9 @@ load_dotenv()
 
 client = OpenAI(
     api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com"
+    base_url="https://api.deepseek.com",
+    max_retries=2,  # 仅 SDK 判断为可重试的异常
+    timeout=30.0,   # 每次请求的网络超时配置，并非整个工作流的总时限
 )
 
 
@@ -107,6 +116,16 @@ while True:
         if state and state.get("final_answer"):
             messages.append({"role": "user", "content": state["user_input"]})
             messages.append({"role": "assistant", "content": state["final_answer"]})
+        continue
+
+    elif user_input == "failed":
+        tasks = get_failed_tasks()
+        if not tasks:
+            print("没有失败的任务")
+        else:
+            print("失败任务（使用 resume <thread_id> 重试）：")
+            for task_id, title in tasks:
+                print(f"{task_id}: {title}")
         continue
 
     elif user_input.startswith("resume "):
