@@ -37,3 +37,12 @@ def update_task_status(thread_id: str, status: str):
         conn.execute("""
             UPDATE tasks SET status = ? WHERE thread_id = ?
         """, (status, thread_id))
+
+
+def get_failed_tasks():
+    with sqlite3.connect(DB_PATH) as conn:
+        return conn.execute("""
+            SELECT thread_id, title FROM tasks
+            WHERE status = 'failed'
+            ORDER BY rowid
+        """).fetchall()
