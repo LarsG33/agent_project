@@ -231,6 +231,9 @@ def run_workflow(
     user_input: str | None = None,
     thread_id: str | None = None,
     approval: bool | None = None,
+    interactive: bool = True,
+    retry_confirmed: bool = False,
+    new_thread_id: str | None = None,
 ) -> AgentState | None:
     """New task, approval resume, or retry a failed checkpoint.
 
@@ -240,10 +243,12 @@ def run_workflow(
     is_resume = thread_id is not None
     if not is_resume and user_input is None:
         raise ValueError("新任务必须提供 user_input")
+    if is_resume and new_thread_id is not None:
+        raise ValueError("不能同时设置 thread_id 和 new_thread_id")
 
     config = {
         "recursion_limit": MAX_STEPS * 4 + 10,
-        "configurable": {"thread_id": thread_id or f"task-{uuid4().hex}"},
+        "configurable": {"thread_id": thread_id or new_thread_id or f"task-{uuid4().hex}"},
     }
     thread_id = config["configurable"]["thread_id"]
     logger.info("[%s] workflow start, resume=%s", thread_id, is_resume)
@@ -278,6 +283,9 @@ def run_workflow(
 
                 if interrupts:
                     if approval is None:
+                        if not interactive:
+                            update_task_status(thread_id, "paused")
+                            return None
                         answer = input("是否批准之前暂停的操作？(y/n/later)：").strip().lower()
                         if answer == "later":
                             print("任务保持暂停状态")
@@ -293,7 +301,7 @@ def run_workflow(
                         print("这个任务并非待审批状态，不能使用 approve/reject")
                         return None
                     print("上次执行失败：", errors)
-                    confirm = input("确认故障已解决、重试不会重复产生副作用？(y/n)：").strip().lower()
+                    confirm = ("y" if retry_confirmed else "n") if not interactive else input("确认故障已解决、重试不会重复产生副作用？(y/n)：").strip().lower()
                     if confirm not in {"y", "yes", "1", "true"}:
                         print("未重试，保留失败任务")
                         return None
@@ -308,7 +316,7 @@ def run_workflow(
                         print("当前任务没有待处理的人工中断")
                         return None
                     print("Checkpoint 待执行节点：", snapshot.next)
-                    confirm = input("确认要从此处继续执行？(y/n)：").strip().lower()
+                    confirm = ("y" if retry_confirmed else "n") if not interactive else input("确认要从此处继续执行？(y/n)：").strip().lower()
                     if confirm not in {"y", "yes", "1", "true"}:
                         return None
                     update_task_status(thread_id, "running")
@@ -337,6 +345,9 @@ def run_workflow(
             while "__interrupt__" in state:
                 update_task_status(thread_id, "paused")
                 logger.info("[%s] waiting for approval", thread_id)
+                if not interactive:
+                    print(f"任务已暂停，ID：{thread_id}")
+                    return None
                 answer = input("是否允许执行以上操作？(y/n/later)：").strip().lower()
                 if answer == "later":
                     print(f"任务已暂停，ID：{thread_id}")
