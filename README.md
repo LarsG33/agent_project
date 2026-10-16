@@ -70,7 +70,8 @@ git pull --ff-only origin main
 .\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 查看交互式接口：
+浏览器打开 [http://127.0.0.1:8000/ui](http://127.0.0.1:8000/ui) 使用任务操作页面（包含暂停原因、批准与拒绝按钮）。
+[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 是 API 开发者调试文档。\n\n接口：
 
 | 接口 | 作用 |
 |---|---|
