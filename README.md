@@ -1,124 +1,134 @@
-# Agent Project · Day 14
+# Agent Project — 21-Day AI Agent Engineering Project
 
-本次把 Day 13 手写的 `for + if` 调度换成真正的 LangGraph。
-DeepSeek、工具函数、RAG、长期记忆和正式聊天历史的用途保持原有设计。
+基于 **DeepSeek + LangGraph + SQLite + RAG + FastAPI** 的本地任务执行 Agent。
+这是一个学习和面试演示项目，**不是**可公开部署的多用户生产服务。
 
-## 本地运行（PowerShell）
+## 能做什么
+
+- 使用 DeepSeek 的 OpenAI-compatible Tool Calling，调用本地加法、乘法、知识检索和记忆工具。
+- 使用 Sentence Transformers 检索 `knowledge.txt`，将相关长期记忆和知识加入任务上下文。
+- 由 Planner 制定任务计划，Agent 执行，Update Plan / Replan 更新与修正计划。
+- LangGraph StateGraph 控制节点与条件路由；`AgentState` 区分消息、计划、工具历史与执行进度。
+- 对更改长期记忆的工具调用使用 `interrupt()` 人工审批。
+- 使用 SQLite Checkpointer 保存各个 thread 的执行现场；`tasks.sqlite` 单独记录任务状态。
+- 记录日志和模型请求超时/重试配置，并支持有限的失败恢复。
+- 提供命令行 `main.py` 与本地 HTTP `api.py` 两种入口。
+
+## 系统架构
+
+```mermaid
+flowchart TD
+    U[CLI main.py / FastAPI api.py] --> W[run_workflow]
+    W --> M[Memory + RAG context]
+    W --> C[(SQLite checkpoints / tasks)]
+    M --> P[Planner]
+    P --> A[Agent: DeepSeek]
+    A -->|tool calls, read-only| T[Tools]
+    A -->|sensitive memory write| H[Approval interrupt]
+    H -->|approved| T
+    H -->|rejected| X[Cancel]
+    T --> UP[Update Plan]
+    A -->|candidate answer| UP
+    UP -->|pending| A
+    UP -->|failed, retryable| R[Retry]
+    R --> A
+    UP -->|plan adjustment| RP[Replan]
+    RP --> A
+    UP -->|all done| F[Final Answer]
+    UP -->|step limit| S[Stop]
+```
+
+**重要区别：** `tasks.sqlite` 记录任务 ID / 标题 / 状态；
+`checkpoints.sqlite` 记录同一个 thread 各节点的 State/执行现场。
+`get_state(config)` 读取对应 thread 的最新 checkpoint；
+`invoke(Command(resume=...))` 恢复中断任务。
+中断节点在恢复时可能从头执行；副作用工具应放在批准之后，并考虑幂等性。
+
+## 在 Windows PowerShell 运行
 
 ```powershell
 cd C:\Users\Admin\Desktop\agent_project
 git pull --ff-only origin main
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+在本地 `.env` 写入 `DEEPSEEK_API_KEY=你的密钥`，**不要提交真实密钥**。
+首次使用 embedding 可能需要下载 Hugging Face 模型。
+
+### 命令行
+
+```powershell
 .\.venv\Scripts\python.exe main.py
 ```
 
-如果 pull 提示本地改动冲突，先查看 `git status`，不要强制覆盖。
-沿用本地 `.env` 中的 `DEEPSEEK_API_KEY`。RAG 初次运行需要下载原来的 embedding 模型。
+支持：普通自然语言任务、`tasks`、`approve 1`、`reject 1`、`failed`、
+`resume <thread_id>`、`clear`、`exit`。
 
-## 建议阅读顺序
+### FastAPI（只在本机使用）
 
-1. `workflow.py` 的 `build_graph()` **底部**：看 add_node/add_edge/add_conditional_edges。
-2. `route_agent()`：模型请求工具时去 tools，否则去 update_plan。
-3. `route_after_update()`：继续、重试、重规划、完成、超限停止。
-4. `state.py`：messages/tool_history 用 operator.add 累积，其他字段覆盖。
-5. `build_graph()` 中的各个节点：只返回本轮更新，不原地修改 State。
-6. `agent.py`：call_agent 只请求模型；execute_tools 只执行工具并返回增量。
-7. `run_workflow()`：创建初始状态，然后 app.invoke() 启动整张图。
-
-## 真实执行图
-
-```mermaid
-flowchart TD
-    S[START] --> P[planner]
-    P --> A[agent]
-    A -->|有工具调用| T[tools]
-    A -->|候选回答| U[update_plan]
-    T --> U
-    U -->|继续| A
-    U -->|工具失败且可重试| R[retry]
-    R --> A
-    U -->|重试耗尽或回答后仍有待办| N[replan]
-    N --> A
-    U -->|回答后无待办| E[END]
-    U -->|达到轮数上限| X[stop]
-    X --> E
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
 ```
 
-条件文字对应 Router 的判断，不是额外的 Node。完成判断优先于轮数上限。
+浏览器打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 查看交互式接口：
 
-## 与 Day 13 的对应关系
+| 接口 | 作用 |
+|---|---|
+| `GET /health` | 服务健康检查 |
+| `POST /tasks` | 提交 `{"prompt": "计算 10+20"}`，返回 task ID、状态与答案 |
+| `GET /tasks` | 查询暂停/失败任务 |
+| `GET /tasks/{task_id}` | 查询单个任务状态 |
+| `POST /tasks/{task_id}/decision` | 传 `{"approved": true}` 或 `false` 决定是否批准 |
+| `POST /tasks/{task_id}/retry` | 传 `{"confirm_safe_to_retry": true}` 确认安全后重试失败任务 |
 
-| 文件 | Day 13 | Day 14 |
-|---|---|---|
-| workflow.py | for 循环 + if 调用节点 | StateGraph + Edge + 条件路由 + invoke |
-| agent.py | run_agent_step 同时调用模型、执行工具、修改 State | call_agent 与 execute_tools 分离，由两个节点调用 |
-| state.py | 所有字段靠业务代码更新 | messages/tool_history 声明追加 Reducer；增加 step_count |
-| planner.py | update_plan_status 直接修改 state | 返回新计划，由节点返回、框架覆盖 |
-| main.py | 调用 run_workflow，保存用户输入和最终回答 | 接口不变，因此无需修改 |
-| requirements.txt | openai/python-dotenv | 增加 LangGraph，补齐已有 RAG 所用依赖 |
+注意：当前 HTTP 入口每次使用新的对话上下文，但任务本身的 State 从 checkpoint 恢复；
+还**不支持**跨 HTTP 请求的独立多轮聊天会话。HTTP 调用同步执行，长任务可能让请求持续很久。
+API **没有身份认证、授权、速率限制或多租户隔离**，请勿绑定 `0.0.0.0` 或暴露到公网。
+不要让其他人访问本地记忆或审批接口。
 
-Day 13 对照版本：
-https://github.com/LarsG33/agent_project/tree/b30e305cab5437b35a8d95b0697dbbb8ec5362d1
-
-## Reducer：最值得对照的几行
-
-```python
-messages: Annotated[list[Any], operator.add]
-tool_history: Annotated[list[ToolHistoryRecord], operator.add]
-plan: list[PlanStep]
-```
-
-节点返回 `{"messages": [message]}`，框架将它追加到原来的 messages。
-节点返回 `{"plan": new_plan}`，框架用它替换旧 plan。
-**有追加 Reducer 的字段只能返回本轮增量，不能返回完整历史，否则会重复。**
-
-这里继续使用 OpenAI 格式的普通消息字典，所以选用 operator.add。
-前面讲的 add_messages 会把消息转换成 LangChain 消息对象，不能直接混用字典下标、
-OpenAI SDK 消息和 `.tool_calls` 属性。本版本统一为字典，使用 `.get("tool_calls")`。
-本次也保留手写工具节点，便于观察参数解析、执行和工具结果配对；尚未采用预制 ToolNode。
-
-## 观察一次执行
-
-输入：`请使用工具计算 (10 + 20) * 100`。
-
-通常会看到以下节点顺序（模型选择可能不同）：
-
-```text
-[Node] planner
-[Node] agent（第 1 轮）
-[Node] tools
-[Tool] calculator
-[Result] 30
-[Node] update_plan
-[Node] agent（第 2 轮）
-[Node] tools
-[Tool] multiply
-[Result] 3000
-[Node] update_plan
-[Node] agent（第 3 轮）
-[Node] update_plan
-AI：...3000...
-```
-
-模型产生的文本先作为候选回答；通过计划检查后才打印和保存为正式最终回答。
-计划仍有 pending 时重新规划；达到 10 轮会停止，并清除未确认的候选回答。
-failed 表示已确认失败的步骤，可以在最终回答里说明，不能等同于任务成功。
-一次模型调用可能产生多个工具请求，tools 节点逐个执行并保留每个 tool_call_id。
-工具失败先重试，最多连续重试 2 次，然后重新规划；仍受 10 轮总上限约束。
-仓库当前没有 unstable_add，失败路径由离线测试模拟验证。
-
-## 验证与范围
+## 测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-8 个离线测试覆盖实际 LangGraph 调度、消息累积、工具结果配对、失败重试、
-重试耗尽后重新规划、候选回答未完成时重规划，以及最大轮数停止。
-测试不调用 DeepSeek、不下载 RAG 模型、不修改个人记忆。实现使用 LangGraph 1.2.12 验证。
-在线 DeepSeek/RAG 联调需要使用你本地环境进行；本次没有用你的 API Key 运行在线测试。
+Day 20 新增 `tests/test_api.py`，利用 mock 测试 API 的参数校验、审批及创建任务接口，
+不调用 DeepSeek；既有测试继续检验图工作流行为。
 
-目前迁移的是执行调度和状态更新；尚未加入 checkpoint、断点恢复、人工审批或并行节点。
-因此回答能力可能与 Day 13 很接近，最直观的区别在控制流、节点边界和 State 更新方式。
+人工验收建议：依次运行普通计算、请求保存记忆（选择 later）、重启服务、
+在 `GET /tasks` 找到暂停 ID、调用 decision 通过或拒绝。
+再用临时模拟故障检查 `failed` → `retry`，**不要**用非幂等工具随意测试重复执行。
+这些端到端在线场景仍需在具有本地 API Key 的机器上实际验证，不能视作已通过。
 
-官方 Graph API 文档：https://docs.langchain.com/oss/python/langgraph/graph-api
+## 项目模块
+
+| 文件 | 职责 |
+|---|---|
+| `main.py` | CLI、任务命令、模型客户端 |
+| `api.py` | FastAPI HTTP 接口 |
+| `main_config.py` | HTTP 入口使用的系统提示词 |
+| `workflow.py` | LangGraph 节点、路由、审批及持久化恢复 |
+| `state.py` | AgentState 及 Reducer |
+| `agent.py` | 模型请求和工具分发 |
+| `planner.py` | 计划创建、状态更新和重规划 |
+| `tools.py` | 可调用工具定义 |
+| `memory.py` / `context.py` | 长期记忆、上下文构造 |
+| `task_manager.py` | SQLite 任务目录 |
+
+## 已知限制和后续工程方向
+
+1. DeepSeek 输出不保证每次采用相同工具路径；本项目是单 Agent 的计划式编排，不能称作真正的多智能体协作平台。
+2. SDK 的 `max_retries` 仅针对可重试网络/API 异常；工具级 `retry_node` 是另一层机制。
+3. 工具执行的业务异常会在 `execute_tools` 中捕获并反馈模型；无法恢复的节点异常由外层标记失败。
+4. 当前副作用工具缺少统一去重键/事务防重放；失败恢复必须人工确认。
+5. HTTP 不提供认证、会话隔离、异步任务队列、并发控制及生产级可观测性。
+6. 需要运行真实在线演示测试，才能宣称完整端到端验证成功。
+
+## 面试介绍（简版）
+
+> 我从零搭建了一个基于 DeepSeek 的 Python Agent，先实现 Tool Calling 和知识库检索，
+> 再加入 Planner、Replan 和状态管理，用 LangGraph 把原有循环重构为可追踪的图工作流。
+> 为了让任务能够安全暂停与恢复，我增加了人工审批和基于 SQLite Checkpointer
+> 的线程级持久化，并将任务目录与执行状态分离。最后增加了日志、有限重试、
+> FastAPI 本地接口与离线测试。项目重点在执行编排、状态管理与故障恢复，
+> 目前定位为工程原型，不是高并发生产系统。
