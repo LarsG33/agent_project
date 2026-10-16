@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Project · 本地控制台</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8eef5;background:#0e1420}
+*{box-sizing:border-box}body{margin:0}main{max-width:780px;margin:48px auto;padding:0 20px}
+h1{font-size:27px;letter-spacing:-.4px}p,small{color:#a6b7c9;line-height:1.6}
+section{background:#172235;border:1px solid #314056;border-radius:14px;padding:23px;margin:18px 0}
+textarea{width:100%;min-height:110px;resize:vertical;outline:none;border:1px solid #50657d;background:#0f1a2a;color:#f5f7fa;font:inherit;border-radius:9px;padding:13px}
+button{cursor:pointer;border:1px solid #55708a;background:#253650;border-radius:9px;padding:10px 18px;color:#fff;font-weight:600;margin:10px 8px 0 0}
+button:hover{background:#344b6d}button:disabled{opacity:.5;cursor:wait}
+button.primary{background:#2368a8;border-color:#428acf}button.approve{background:#186748;border-color:#32aa70}
+button.deny{background:#74323a;border-color:#b95665}
+.badge{display:inline-block;border:1px solid #56748c;border-radius:7px;padding:4px 9px;font-size:13px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#101927;border-radius:10px;padding:13px;font-size:13px}
+#result,#approvalBox{display:none}.muted{color:#a6b7c9}#status{font-weight:700}
+</style></head>
+<body><main>
+<h1>Agent Project</h1><p>本地任务控制台 · LangGraph / DeepSeek / Checkpoint</p>
+<section><h2>新任务</h2><textarea id="prompt" placeholder="输入任务，例如：请记住我喜欢歌手 Vaundy"></textarea>
+<button class="primary" id="submit">提交任务</button><p id="notice" aria-live="polite"></p></section>
+<section id="result"><h2>任务状态：<span id="status"></span></h2><small id="taskId"></small><p id="answer"></p>
+<div id="approvalBox"><h3>需要你的批准</h3><p id="reason"></p><pre id="operations"></pre>
+<button class="approve" id="approve">批准</button><button class="deny" id="deny">拒绝</button></div></section>
+<section><h2>未处理任务</h2><button id="refresh">刷新暂停任务</button><div id="pending"></div></section>
+<p class="muted">仅供本机学习演示。不要将本服务暴露到公网。</p>
+</main>
+<script>
+let activeId=null;
+const $=id=>document.getElementById(id);
+let busy=false;
+function setBusy(value){busy=value;for(const id of ["submit","approve","deny","refresh"])$(id).disabled=value;}
+async function request(path, options){
+ const response=await fetch(path,{...options,headers:{"Content-Type":"application/json"}});
+ let data;try{data=await response.json()}catch{throw Error("服务器未返回 JSON")}
+ if(!response.ok)throw Error(typeof data.detail==="string"?data.detail:JSON.stringify(data.detail||data));
+ return data;
+}
+function render(data){
+ activeId=data.id;
+ $("result").style.display="block";
+ $("status").textContent=data.status;
+ $("taskId").textContent="Task ID: "+data.id;
+ $("answer").textContent=data.answer ? "Agent："+data.answer : "";
+ const approval=data.approval;
+ const needs=data.status==="paused" && approval?.needs_approval===true;
+ $("approvalBox").style.display=needs?"block":"none";
+ $("reason").textContent=approval?.reason||"";
+ $("operations").textContent=JSON.stringify(approval?.operations||[],null,2);
+ if(data.status==="paused"&&!needs)$("answer").textContent=approval?.reason||"任务已暂停，请查询服务端状态。";
+}
+async function submit(){
+ if(!$("prompt").value.trim())return;
+ setBusy(true);$("notice").textContent="正在运行 Agent，请稍候…";
+ try{const data=await request("/tasks",{method:"POST",body:JSON.stringify({prompt:$("prompt").value})});
+ render(data);$("notice").textContent="任务已提交";await refresh();
+ }catch(e){$("notice").textContent="失败："+e.message}finally{setBusy(false)}
+}
+async function decide(approved){
+ if(!activeId)return;
+ setBusy(true);$("notice").textContent="正在恢复任务…";
+ try{render(await request("/tasks/"+encodeURIComponent(activeId)+"/decision",{method:"POST",body:JSON.stringify({approved})}));
+ $("notice").textContent="审批结果已提交";await refresh();
+ }catch(e){$("notice").textContent="失败："+e.message}finally{setBusy(false)}
+}
+async function refresh(){
+ try{const x=await request("/tasks");$("pending").replaceChildren();
+ if(!x.paused.length){$("pending").textContent="暂无暂停任务";return}
+ for(const item of x.paused){
+   const div=document.createElement("div");div.style.marginTop="12px";
+   const name=document.createElement("span");name.textContent=item.title+" ";
+   const btn=document.createElement("button");btn.textContent="查看并处理";
+   btn.onclick=async()=>{try{render(await request("/tasks/"+encodeURIComponent(item.id)))}catch(e){$("notice").textContent=e.message}};
+   div.append(name,btn);$("pending").append(div);
+ }
+ }catch(e){$("pending").textContent="获取任务失败："+e.message}
+}
+$("submit").onclick=submit;$("approve").onclick=()=>decide(true);
+$("deny").onclick=()=>decide(false);$("refresh").onclick=refresh;refresh();
+</script></body></html>
