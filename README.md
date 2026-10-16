@@ -12,7 +12,7 @@
 - 对更改长期记忆的工具调用使用 `interrupt()` 人工审批。
 - 使用 SQLite Checkpointer 保存各个 thread 的执行现场；`tasks.sqlite` 单独记录任务状态。
 - 记录日志和模型请求超时/重试配置，并支持有限的失败恢复。
-- 提供命令行 `main.py` 与本地 HTTP `api.py` 两种入口。
+- 提供命令行 `main.py` 与本地 HTTP `api.py` 两种入口，以及 `agent_ui.html` 本地浏览器控制台。
 
 ## 系统架构
 
@@ -71,7 +71,9 @@ git pull --ff-only origin main
 ```
 
 浏览器打开 [http://127.0.0.1:8000/ui](http://127.0.0.1:8000/ui) 使用任务操作页面（包含暂停原因、批准与拒绝按钮）。
-[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 是 API 开发者调试文档。\n\n接口：
+[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 是 API 开发者调试文档。
+
+接口：
 
 | 接口 | 作用 |
 |---|---|
@@ -87,6 +89,41 @@ git pull --ff-only origin main
 API **没有身份认证、授权、速率限制或多租户隔离**，请勿绑定 `0.0.0.0` 或暴露到公网。
 不要让其他人访问本地记忆或审批接口。
 
+### 浏览器控制台与人工审批流程
+
+打开 `http://127.0.0.1:8000/ui` 后，可以提交自然语言任务、查看暂停任务和执行“批准/拒绝”。
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器 agent_ui.html
+    participant API as FastAPI api.py
+    participant G as LangGraph workflow
+    participant DB as SQLite Checkpointer
+    B->>API: POST /tasks, prompt
+    API->>G: run_workflow(interactive=False)
+    G->>DB: interrupt() 保存 checkpoint
+    G-->>API: paused
+    API->>DB: 读取 pending 工具调用
+    API-->>B: status + approval reason + operations
+    B->>API: POST /tasks/{id}/decision, approved
+    API->>G: Command(resume=approved)
+    G-->>B: 最终任务状态与回答
+```
+
+浏览器显示的审批理由和工具参数来自**已保存的 checkpoint**，不是前端猜测。
+即使刷新页面，也能从暂停任务列表重新选中任务进行审批。
+**审批前应阅读工具参数，确认要修改的长期记忆正确。**
+
+#### 前端实现范围（面试需要掌握到什么程度）
+
+- `agent_ui.html` 是轻量原生网页：HTML 定义输入框/按钮，CSS 负责样式，JavaScript 用 `fetch()` 请求 FastAPI。
+- `POST /tasks` 提交任务，接口返回 `id / status / answer / approval`。`status=paused` 且需要审批时，页面展示操作参数和批准/拒绝按钮。
+- 点击按钮调用 `POST /tasks/{task_id}/decision`，后端经 `Command(resume=True/False)` 恢复 LangGraph。
+- 前端不会直接执行工具或调用 DeepSeek；模型调用、持久化和权限检查在 Python 后端。
+
+本项目的重点是 **Agent 编排与后端工程**，前端只是一个操作演示，不依赖 React/Vue，
+不需要对其进行前端框架层面的深度学习。
+
 ## 测试
 
 ```powershell
@@ -96,8 +133,8 @@ API **没有身份认证、授权、速率限制或多租户隔离**，请勿绑
 Day 20 新增 `tests/test_api.py`，利用 mock 测试 API 的参数校验、审批及创建任务接口，
 不调用 DeepSeek；既有测试继续检验图工作流行为。
 
-人工验收建议：依次运行普通计算、请求保存记忆（选择 later）、重启服务、
-在 `GET /tasks` 找到暂停 ID、调用 decision 通过或拒绝。
+人工验收建议：在 `/ui` 运行普通计算、请求保存长期记忆、核对审批参数，
+点击批准或拒绝；重启服务后刷新暂停任务列表并继续处理。
 再用临时模拟故障检查 `failed` → `retry`，**不要**用非幂等工具随意测试重复执行。
 这些端到端在线场景仍需在具有本地 API Key 的机器上实际验证，不能视作已通过。
 
@@ -106,7 +143,8 @@ Day 20 新增 `tests/test_api.py`，利用 mock 测试 API 的参数校验、审
 | 文件 | 职责 |
 |---|---|
 | `main.py` | CLI、任务命令、模型客户端 |
-| `api.py` | FastAPI HTTP 接口 |
+| `api.py` | FastAPI HTTP 接口与审批详情读取 |
+| `agent_ui.html` | 原生 HTML/CSS/JavaScript 本地网页控制台 |
 | `main_config.py` | HTTP 入口使用的系统提示词 |
 | `workflow.py` | LangGraph 节点、路由、审批及持久化恢复 |
 | `state.py` | AgentState 及 Reducer |
