@@ -24,7 +24,7 @@ Python · DeepSeek API · LangGraph · SQLite · Sentence Transformers · FastAP
 flowchart TD
     UI[CLI / Browser UI] --> API[main.py / FastAPI]
     API --> W[run_workflow]
-    W --> MEM[Retrieve relevant memory]
+    W --> MEM[Relevant Memory + Context]
     W --> CP[(SQLite checkpoints)]
     W --> P[Planner]
     P --> A[Agent / DeepSeek]
@@ -132,10 +132,3 @@ python -m unittest discover -s tests -v
 
 仓库包含工作流调度及 HTTP 接口的离线测试。测试覆盖不等于完整的在线端到端验证；真实模型行为及人工审批流程仍需在配置 API Key 后验证。
 
-## 设计边界
-
-本项目定位于单 Agent 工作流的本地工程原型。Web API 当前以同步请求运行，尚未实现多用户鉴权、独立会话管理、异步任务队列和并发隔离，因此**仅建议在本机访问，不应直接暴露到公网**。此外，失败后的节点重试可能重复执行有副作用的操作，恢复前需确认安全性。
-
-## License
-
-本仓库如需复用，请先确认适用的许可证；当前 README 不对代码授权范围作额外声明。
