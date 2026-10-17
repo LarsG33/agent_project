@@ -26,7 +26,7 @@ flowchart TD
     API --> W[run_workflow]
     W --> MEM[Relevant Memory + Context]
     W --> CP[(SQLite checkpoints)]
-    W --> P[Planner]
+    MEM --> P[Planner]
     P --> A[Agent / DeepSeek]
     A -->|Tool call| ROUTE{Approval required?}
     ROUTE -->|No| T[Execute tools]
